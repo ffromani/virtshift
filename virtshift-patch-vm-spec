@@ -1,0 +1,51 @@
+#!/usr/bin/python3
+
+import contextlib
+import json
+import os
+import sys
+import yaml
+
+
+_MASTER_YAML = 'openshift/99_openshift-cluster-api_master-machines-0.yaml'
+_WORKER_YAML = 'openshift/99_openshift-cluster-api_worker-machineset-0.yaml'
+
+
+def update_libvirtproviderspec(spec, conf, what):
+    sys.stderr.write('%s vcpus (count) %d -> %d\n' % (what, spec['domainVcpu'], conf[what]["vcpu"]))
+    spec['domainVcpu'] = conf[what]["vcpu"]
+    sys.stderr.write('%s memory (megs) %d -> %d\n' % (what, spec['domainMemory'], conf[what]["mem"]))
+    spec['domainMemory'] = conf[what]["mem"]
+
+
+@contextlib.contextmanager
+def update_conf(yaml_path):
+    with open(yaml_path, 'rt') as yaml_r:
+        tree = yaml.safe_load(yaml_r)
+
+    yield tree
+
+    os.rename(yaml_path, yaml_path + '.orig')
+    with open(yaml_path, 'wt') as yaml_w:
+        master = yaml.safe_dump(tree, yaml_w)
+
+
+def process(conf):
+    sys.stderr.write("%s\n" % json.dumps(conf, indent=2, sort_keys=True))
+
+    with update_conf(_MASTER_YAML) as master:
+        update_libvirtproviderspec(master['spec']['providerSpec']['value'], conf, "master")
+
+    with update_conf(_WORKER_YAML) as worker:
+        update_libvirtproviderspec(worker['spec']['template']['spec']['providerSpec']['value'], conf, "worker")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.stderr.write("usage: %s conf_as_json\n" % sys.argv[0])
+        sys.stderr.write("run this tool in the assets directory\n")
+        sys.stderr.write("example conf: '{\"master\":{\"vcpu\":4, \"mem\":8192},\"worker\":{\"vcpu\":4,\"mem\": 8192}}'\n")
+        sys.exit(1)
+
+    conf = json.loads(sys.argv[1])
+    process(conf)
