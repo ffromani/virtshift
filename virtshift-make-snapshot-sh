@@ -1,0 +1,124 @@
+#!/usr/bin/python3
+
+import contextlib
+import os
+import stat
+import sys
+
+from lxml import etree as ET 
+import jinja2
+import libvirt
+
+_TMPL = """
+#!/bin/sh
+set -ex
+
+PATH="{{ path }}"
+NAME="{{ name }}"
+DESC="{{ description }}"
+
+{%- for dom in doms %}
+virsh snapshot-create-as {{ dom }} "${NAME}" "${DESC}" --diskspec vda,file="${PATH}/{{ pool }}/{{ dom }}-overlay00.qcow2" --disk-only --atomic
+{%- endfor %}
+"""
+
+_BASE_PATH="/var/lib/libvirt/openshift-images"
+
+
+class OCPLibvirt:
+    def __init__(self, path=_BASE_PATH):
+        self._pool_path = path
+        self._conn = None
+        self._pool_name = ''
+        self._doms = []
+
+    @property
+    def path(self):
+        return self._pool_path
+
+    @property
+    def pool(self):
+        return self._pool_name
+
+    @property
+    def domains(self):
+        return [d.name() for d in self._doms]
+
+    def open(self):
+        if self._conn is not None:
+            return
+        self._conn = libvirt.openReadOnly('qemu:///system')
+
+    def close(self):
+        self._conn.close()
+
+    def scan(self):
+        if self._conn is None:
+            raise RuntimeError("not connected")
+
+        self._scan_pool()
+        self._scan_domains()
+
+    # helpers
+
+    def _scan_pool(self):
+        pools = self._conn.listAllStoragePools()
+        if len(pools) != 1:
+            raise RuntimeError("unexpected number of pools: %d (should be 1)" % len(pools))
+        self._pool_name = pools[0].name()
+
+        image_path = os.path.join(_BASE_PATH, self._pool_name)
+        stat_info = os.stat(image_path)
+        if not stat.S_ISDIR(stat_info.st_mode):
+            raise RuntimeError("image path %s is not a directory" % image_path)
+
+    def _scan_domains(self):
+        # hack: here we implicitely rely on the fact that the names picked by
+        # the installer are sorted master-first; we should guarantee this explicitely.
+        self._doms = self._conn.listAllDomains()
+        if len(self._doms) < 1:
+            raise RuntimeError("unexpected number of domains: %d (should be >1)" % len(self._doms))
+
+        for dom in self._doms:
+            _check_domain(dom) 
+
+
+def _check_domain(dom):
+    root = ET.fromstring(dom.XMLDesc(0))
+    targets = root.xpath("/domain/devices/disk/target")
+    if len(targets) != 1:
+        raise RuntimeError("VM %s as more devices than expected: %s" % (dom.name(), targets))
+    dev = targets[0].get('dev', '')
+    if dev != 'vda':
+        raise RuntimeError("VM %s as unexpected disk device %s (expected: vda)" % (dom.name(), dev))
+
+
+@contextlib.contextmanager
+def ocp_libvirt():
+    st = OCPLibvirt()
+    st.open()
+    try:
+        st.scan()
+        yield st
+    finally:
+        st.close()
+
+
+def produce(name, description):
+    tmpl = jinja2.Template(_TMPL)
+    with ocp_libvirt() as ocp:
+        print(
+            tmpl.render(
+                name=name,
+                description=description,
+                path=ocp.path,
+                pool=ocp.pool,
+                doms=ocp.domains,
+            )
+        )
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        sys.stderr.write("usage: %s name description\n" % sys.argv[0])
+    produce(sys.argv[1], sys.argv[2])
