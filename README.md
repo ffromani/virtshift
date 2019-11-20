@@ -13,7 +13,6 @@ Apache v2
 
 These steps aren't strictly neede, but if they can make your life significantly easier.
 
-
 ### libvirt-guests service
 This service takes care of suspending and resuming VMs when the system stops/starts. This may save some `destroy/create` loops.
 Steps:
@@ -28,6 +27,11 @@ ON_SHUTDOWN=suspend
 ```
 # systemctl enable libvirt-guests.service
 ```
+
+### openshift-installer fork
+
+[This repo](https://github.com/fromanirh/installer) contains patches to streamline/enhance the libvirt provider workflow. Patches hosted here will be sent as PR once mature
+and deemed ready for the broader `openshift-installer` audience.
 
 ## Cluster lifecycle
 
