@@ -9,11 +9,29 @@ Using openshift on libvirt virtual machines is *strongly* *discouraged* for ever
 
 Apache v2
 
+## Host-level setup (CentOS/Fedora)
+
+These steps aren't strictly neede, but if they can make your life significantly easier.
+
+
+### libvirt-guests service
+This service takes care of suspending and resuming VMs when the system stops/starts. This may save some `destroy/create` loops.
+Steps:
+1. configure the service editing `/etc/sysconfig/libvirt-guests`. The file is heavily commented, however a minimal working configuration is show below
+```bash
+# cat /etc/sysconfig/libvirt-guests
+ON_BOOT=start
+ON_SHUTDOWN=suspend
+```
+
+2. enable the service proper
+```
+# systemctl enable libvirt-guests.service
+```
 
 ## Cluster lifecycle
 
 These steps augment the [openshift installer quickstart](https://github.com/openshift/installer/#quick-start). We assume you are familiar with that doc and following it through.
-
 
 1. first, prepare your base configuration`install-config.yaml`
 
