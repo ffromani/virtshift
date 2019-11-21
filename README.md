@@ -36,6 +36,7 @@ and deemed ready for the broader `openshift-installer` audience.
 ## Cluster lifecycle
 
 These steps augment the [openshift installer quickstart](https://github.com/openshift/installer/#quick-start). We assume you are familiar with that doc and following it through.
+You may want to keep the [docs about using alternate images](https://github.com/openshift/installer/blob/master/docs/dev/alternative_release_image_sources.md) handy.
 
 1. first, prepare your base configuration`install-config.yaml`
 
