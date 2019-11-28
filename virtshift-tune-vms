@@ -2,8 +2,11 @@
 
 import argparse
 import contextlib
+import copy
 import json
+import logging
 import os
+import os.path
 import sys
 import yaml
 
@@ -13,6 +16,15 @@ _MASTER_YAML = 'openshift/99_openshift-cluster-api_master-machines-0.yaml'
 _WORKER_YAML = 'openshift/99_openshift-cluster-api_worker-machineset-0.yaml'
 _OVERCOMMIT_CPU = 1.5
 _OVERCOMMIT_MEM = 1.5
+
+
+def adjust_overcommit(host_conf):
+     return {
+        "host" : {
+            "vcpu": int(host_conf["host"]["vcpu"] * _OVERCOMMIT_CPU),
+            "mem": int(host_conf["host"]["mem"] * _OVERCOMMIT_MEM),
+        }
+    }
 
 
 def get_host_config():
@@ -35,131 +47,159 @@ def get_host_config():
     }
 
 
-def adjust_overcommit(host_conf):
-     return {
-        "host" : {
-            "vcpu": int(host_conf["host"]["vcpu"] * _OVERCOMMIT_CPU),
-            "mem": int(host_conf["host"]["mem"] * _OVERCOMMIT_MEM),
-        }
-    }
-   
+class YAMLStore:
+    def __init__(self, basedir):
+        self._basedir = basedir
+
+    def cluster_replicas(self):
+        with open(self._path(_CLUSTER_YAML), 'rt') as cconf:
+            tree  = yaml.safe_load(cconf)
+            subtree = yaml.safe_load(tree["data"]["install-config"])
+            return {
+                "master": int(subtree["controlPlane"]["replicas"]),
+                "worker": int(subtree["compute"][0]["replicas"]),
+            }
+
+    # this MUST return ref to internal data - no copies!
+    def load_specs(self):
+        return (
+            self._load_config_file(self._path(_MASTER_YAML)),
+            self._load_config_file(self._path(_WORKER_YAML)),
+        )
+
+    def save_specs(self, master, worker, backup=True):
+        self._save_config_file(self._path(_MASTER_YAML), master, backup)
+        self._save_config_file(self._path(_WORKER_YAML), worker, backup)
+
+    # XXX helpers
+
+    def _path(self, path):
+        return os.path.join(self._basedir, path)
+
+    def _load_config_file(self, path):
+        with open(path, 'rt') as src:
+            return yaml.safe_load(src)
+
+    def _save_config_file(self, path, tree, backup=True):
+        if backup:
+            os.rename(path, path + '.orig')  # TODO: more than once?
+        with open(path, 'wt') as dst:
+            yaml.safe_dump(tree, dst)
 
 
-def update_libvirtproviderspec(spec, conf, what):
-    sys.stderr.write('%s vcpus (count) %d -> %d\n' % (what, spec['domainVcpu'], conf[what]["vcpu"]))
-    spec['domainVcpu'] = conf[what]["vcpu"]
-    sys.stderr.write('%s memory (megs) %d -> %d\n' % (what, spec['domainMemory'], conf[what]["mem"]))
-    spec['domainMemory'] = conf[what]["mem"]
+class Cluster:
+    def __init__(self, basedir, host_conf):
+        self._yamls = YAMLStore(basedir)
+        self._host_conf = host_conf
+        self._replica_info = self._yamls.cluster_replicas()
+        self._master_tree = None
+        self._worker_tree = None
+        self._master_tree, self._worker_tree = self._yamls.load_specs()
+        self._baseline = self._get_baseline()
 
+    @property
+    def total_nodes(self):
+        return (
+            self._replica_info["master"] +
+            self._replica_info["worker"]
+        )
 
-@contextlib.contextmanager
-def update_conf(yaml_path, args):
-    with open(yaml_path, 'rt') as yaml_r:
-        tree = yaml.safe_load(yaml_r)
-
-    yield tree
-
-    if args.dryrun:
-        return
-    os.rename(yaml_path, yaml_path + '.orig')
-    with open(yaml_path, 'wt') as yaml_w:
-        master = yaml.safe_dump(tree, yaml_w)
-
-
-def process(conf, args):
-    with update_conf(_MASTER_YAML, args) as master:
-        update_libvirtproviderspec(master['spec']['providerSpec']['value'], conf, "master")
-    with update_conf(_WORKER_YAML, args) as worker:
-        update_libvirtproviderspec(worker['spec']['template']['spec']['providerSpec']['value'], conf, "worker")
-
-
-def get_cluster_replicas():
-    with open(_CLUSTER_YAML, 'rt') as cconf:
-        tree  = yaml.safe_load(cconf)
-        subtree = yaml.safe_load(tree["data"]["install-config"])
+    def resources_used_by_conf(self, conf):
         return {
-            "master": int(subtree["controlPlane"]["replicas"]),
-            "worker": int(subtree["compute"][0]["replicas"]),
+            "usage": {
+                "vcpu": (
+                    conf["master"]["vcpu"] * self._replica_info["master"] +
+                    conf["worker"]["vcpu"] * self._replica_info["worker"]
+                ),
+                "mem": (
+                    conf["master"]["mem"] * self._replica_info["master"] +
+                    conf["worker"]["mem"] * self._replica_info["worker"]
+                ),
+            }
         }
 
-
-def total_nodes(replica_info):
-    return (replica_info["master"] + replica_info["worker"])
-
-
-def get_baseline():
-    with open(_MASTER_YAML, 'rt') as master:
-        master_tree = yaml.safe_load(master)
-        master_spec = master_tree['spec']['providerSpec']['value']
-    with open(_WORKER_YAML, 'rt') as worker:
-        worker_tree = yaml.safe_load(worker)
-        worker_spec = worker_tree['spec']['template']['spec']['providerSpec']['value']
-    return {
-        "master": {
-            "vcpu": int(master_spec["domainVcpu"]),
-            "mem": int(master_spec["domainMemory"]),
-        },
-        "worker": {
-            "vcpu": int(worker_spec["domainVcpu"]),
-            "mem": int(worker_spec["domainMemory"]),
+    def resources_free_on_host(self, used=None):
+        if used is None:
+            used = self.resources_used_by_conf(self._baseline)
+        return {
+            "free": {
+                "vcpu": max(self._host_conf["host"]["vcpu"] - used["usage"]["vcpu"], 0),
+                "mem": max(self._host_conf["host"]["mem"] - used["usage"]["mem"], 0),
+            }
         }
-    }
 
+    def host_config(self):
+        return copy.deepcopy(self._host_conf)
 
-def calc_usage(conf, replica_info):
-    return {
-        "usage": {
-            "vcpu": (
-                conf["master"]["vcpu"] * replica_info["master"] +
-                conf["worker"]["vcpu"] * replica_info["worker"]
-            ),
-            "mem": (
-                conf["master"]["mem"] * replica_info["master"] +
-                conf["worker"]["mem"] * replica_info["worker"]
-            ),
+    def replica_info(self):
+        return copy.deepcopy(self._replica_info)
+
+    def baseline(self):
+        return copy.deepcopy(self._baseline)
+
+    @contextlib.contextmanager
+    def specs(self):
+        master, worker = self._get_specs()
+        try:
+            # MUST yield internal refs - not copies!
+            yield master, worker
+        finally:
+            self._yamls.save_specs(self._master_tree, self._worker_tree)
+
+    # helpers
+
+    # this MUST return ref to internal data - no copies!
+    def _get_specs(self):
+        # TODO: keep original specs?
+        return (
+            self._master_tree['spec']['providerSpec']['value'],
+            self._worker_tree['spec']['template']['spec']['providerSpec']['value']
+        )
+
+    def _get_baseline(self):
+        master_spec, worker_spec = self._get_specs()
+        return {
+            "master": {
+                "vcpu": int(master_spec["domainVcpu"]),
+                "mem": int(master_spec["domainMemory"]),
+            },
+            "worker": {
+                "vcpu": int(worker_spec["domainVcpu"]),
+                "mem": int(worker_spec["domainMemory"]),
+            }
         }
-    }
+  
 
-
-def free_resources(host_conf, used):
-    return {
-        "free": {
-            "vcpu": max(host_conf["host"]["vcpu"] - used["usage"]["vcpu"], 0),
-            "mem": max(host_conf["host"]["mem"] - used["usage"]["mem"], 0),
-        }
-    }
-
-
-def _calc_res_increase(res, what, block, replica_info):
+def _calc_res_increase(ocp, res, what, block):
     free_res = res["free"][what]
-    block *= total_nodes(replica_info)
+    block *= ocp.total_nodes
     unusable = free_res % block
     usable = free_res - unusable
     return usable, block
 
 
-def _increase_resources_for(conf, res, replica_info, what="", block=0):
+def _increase_resources_for(ocp, conf, res, what="", block=0):
     if res["free"][what] <= 0:
         return
-    usable, block = _calc_res_increase(res, what, block, replica_info)
+    usable, step = _calc_res_increase(ocp, res, what, block)
     while usable > 0:
         conf["master"][what] += block
         conf["worker"][what] += block
-        usable -= block
+        usable -= step
 
 
-def make_conf(host_conf):
-    baseline = get_baseline()
-    conf = {k:v for k, v in baseline.items()}
-    replica_info = get_cluster_replicas()
-    res = free_resources(host_conf, calc_usage(baseline, replica_info))
-    _increase_resources_for(conf, res, replica_info, what="mem", block=1024)
-    _increase_resources_for(conf, res, replica_info, what="vcpu", block=2)
+def make_conf(ocp):
+    conf = ocp.baseline()
+    res = ocp.resources_free_on_host()
+    _increase_resources_for(ocp, conf, res, what="mem", block=1024)
+    _increase_resources_for(ocp, conf, res, what="vcpu", block=2)
     return conf
 
 
 def _parse_options():
     parser = argparse.ArgumentParser()
+    parser.add_argument("-d", "--dir", help="cluster base directory",
+                        default=".")
     parser.add_argument("-v", "--verbose", help="increase output verbosity",
                         default=False, action="store_true")
     parser.add_argument("-D", "--dryrun", help="only show changes, don't do them",
@@ -167,28 +207,42 @@ def _parse_options():
     parser.add_argument("-C", "--confonly", help="only compute the config",
                         default=False, action="store_true")
     parser.add_argument("-c", "--conf", help="VM config to use", default="")
-    return parse.parse_args()
+    return parser.parse_args()
 
 
-def _main(args):
-    if not args.conf:
-        host_conf = get_host_config()
-        if args.verbose:
-            print("host resources, native        : %s" % host_conf)
-        host_conf = adjust_overcommit(host_conf)
-        if args.verbose:
-            print("host resources, overcommitted : %s" % host_conf)
-        conf = make_conf(host_conf)
-    else:
-        conf = args.conf
+def _tune(args):
+    host_conf = get_host_config()
     if args.verbose:
-        print("cluster resources, configured : %s" % conf)
+        logging.info("host resources, native        : %s", host_conf)
+    host_conf = adjust_overcommit(host_conf)
+    if args.verbose:
+        logging.info("host resources, overcommitted : %s", host_conf)
 
-    if not args.confonly:
+    ocp = Cluster(args.dir, host_conf)
+
+    if args.verbose:
+        logging.info("replica info                  : %s", ocp.replica_info())
+        logging.info("host resources, free          : %s",
+                     ocp.resources_free_on_host())
+        logging.info("cluster resources, baseline   : %s", ocp.baseline())
+
+    if not args.conf:
+        conf = make_conf(ocp)
+    else:
+        conf = json.loads(args.conf)
+    if args.verbose:
+        logging.info("cluster resources, configured : %s", conf)
+
+    if args.confonly:
         return
 
-    process(conf, args)
+    with ocp.specs() as (master, worker):
+        master['domainVcpu'] = conf["master"]["vcpu"]
+        master['domainMemory'] = conf["master"]["mem"]
+        worker['domainVcpu'] = conf["worker"]["vcpu"]
+        worker['domainMemory'] = conf["worker"]["mem"]
 
 
 if __name__ == "__main__":
-    _main(_parse_options())
+    logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
+    _tune(_parse_options())
