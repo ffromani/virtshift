@@ -181,11 +181,11 @@ def _calc_res_increase(ocp, res, what, block):
 def _increase_resources_for(ocp, conf, res, what="", block=0):
     if res["free"][what] <= 0:
         return
-    usable, block = _calc_res_increase(ocp, res, what, block)
+    usable, step = _calc_res_increase(ocp, res, what, block)
     while usable > 0:
         conf["master"][what] += block
         conf["worker"][what] += block
-        usable -= block
+        usable -= step
 
 
 def make_conf(ocp):
@@ -221,6 +221,7 @@ def _tune(args):
     ocp = Cluster(args.dir, host_conf)
 
     if args.verbose:
+        logging.info("replica info                  : %s", ocp.replica_info())
         logging.info("host resources, free          : %s",
                      ocp.resources_free_on_host())
         logging.info("cluster resources, baseline   : %s", ocp.baseline())
@@ -232,7 +233,7 @@ def _tune(args):
     if args.verbose:
         logging.info("cluster resources, configured : %s", conf)
 
-    if not args.confonly:
+    if args.confonly:
         return
 
     with ocp.specs() as (master, worker):
