@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	CheckpointsURL string = "https://raw.githubusercontent.com/fromanirh/virtshift/wrapinstall/installer/checkpoints.json"
+	CheckpointsURL string = "https://raw.githubusercontent.com/fromanirh/virtshift/master/installer/checkpoints.json"
 )
 
 type OpenshiftInstallVersion struct {
