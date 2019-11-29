@@ -74,11 +74,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "invalid checkpoint: %v\n", cp)
 		os.Exit(8)
 	}
+	overrideVar := fmt.Sprintf("OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE=%s", cp.ReleaseImageURL)
 
-	debug.Printf("setup done, running openshift-install")
+	debug.Printf("running openshift-install with %s", overrideVar)
 
 	cmd := exec.Command(path, os.Args[1:]...)
-	cmd.Env = append(os.Environ(), fmt.Sprintf("OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE=%s", cp.ReleaseImageURL))
+	cmd.Env = append(os.Environ(), overrideVar)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
