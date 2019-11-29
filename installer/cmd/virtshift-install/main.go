@@ -39,7 +39,6 @@ func showHelp() {
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "help" {
 		showHelp()
-		os.Exit(0)
 	}
 	debug.Printf("virtshift-install start")
 	defer debug.Printf("virtshift-install done")
@@ -86,6 +85,10 @@ func main() {
 	err = cmd.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(255) // TODO: err exit code
+		if x, ok := err.(*exec.ExitError); ok {
+			os.Exit(x.ExitCode())
+		}
+		debug.Printf("%v not ExitErro but %T?!", err, err)
+		os.Exit(255)
 	}
 }
