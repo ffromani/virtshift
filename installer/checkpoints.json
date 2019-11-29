@@ -1,0 +1,7 @@
+[
+	{
+		"installer": {
+		},
+		"release_image": "registry.svc.ci.openshift.org/ocp/release@sha256:ad2c408327c9d72f1e52859cad0d57f2bbc8f2efdd143139186a953c92f2a50e"
+	}
+]
