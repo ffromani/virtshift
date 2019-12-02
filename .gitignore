@@ -1,2 +1,4 @@
+installer/cmd/virtshift-fetch-releases/virtshift-fetch-releases
 installer/cmd/virtshift-install/virtshift-install
+virtshift-fetch-releases
 virtshift-install

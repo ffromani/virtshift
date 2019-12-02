@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/fromanirh/virtshift/installer/pkg/buildscore"
 	"github.com/fromanirh/virtshift/installer/pkg/graphinfo"
 )
 
@@ -43,21 +44,59 @@ func showHelp() {
 func main() {
 	var graphURL string
 	var OCPVersion string
+	var skipBuildScore bool
+	var bestScore bool
 
 	pflag.Usage = showHelp
 	pflag.StringVarP(&graphURL, "url", "u", defaultGraphURL, "URL from where to get the graph data")
 	pflag.StringVarP(&OCPVersion, "ocpversion", "V", defaultOCPVersion, "OCP version to be considered")
+	pflag.BoolVarP(&skipBuildScore, "score", "S", false, "do not compute the build score")
+	pflag.BoolVarP(&bestScore, "best", "B", false, "show only data about the best scored build")
 	pflag.Parse()
 
+	var err error
 	bi, err := graphinfo.NewFromURL(graphURL, OCPVersion)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 2, 1, ' ', 0)
-	for _, item := range bi {
-		fmt.Fprintf(w, "%s\t\t%s\n", item.Version, item.Payload)
+	var scores buildscore.BuildScore
+	if !skipBuildScore {
+		scores, err = buildscore.NewFromBuildInfo(bi)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			os.Exit(2)
+		}
 	}
-	w.Flush()
+
+	if bestScore {
+		if skipBuildScore {
+			fmt.Fprintf(os.Stderr, "no scores available\n")
+			os.Exit(0)
+		}
+		item := findHighestScoreBuildInfo(bi, scores)
+		w := tabwriter.NewWriter(os.Stdout, 0, 2, 1, ' ', 0)
+		fmt.Fprintf(w, "%s\t\t%s\t\t%v\n", item.Version, item.Payload, scores[item.Version])
+		w.Flush()
+	} else {
+		w := tabwriter.NewWriter(os.Stdout, 0, 2, 1, ' ', 0)
+		for _, item := range bi {
+			fmt.Fprintf(w, "%s\t\t%s\t\t%v\n", item.Version, item.Payload, scores[item.Version])
+		}
+		w.Flush()
+	}
+}
+
+func findHighestScoreBuildInfo(bi []graphinfo.BuildInfo, scores buildscore.BuildScore) graphinfo.BuildInfo {
+	highScoreVal := 0
+	var res graphinfo.BuildInfo
+	for _, item := range bi {
+		if scores[item.Version] > highScoreVal {
+			highScoreVal = scores[item.Version]
+			res = item
+		}
+
+	}
+	return res
 }

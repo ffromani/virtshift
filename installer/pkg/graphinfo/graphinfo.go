@@ -77,9 +77,13 @@ func extractBuildInfoFromGraphJSON(r io.Reader) ([]BuildInfo, error) {
 func takeByVersion(bi []BuildInfo, version string) []BuildInfo {
 	res := []BuildInfo{}
 	for _, item := range bi {
-		if strings.HasPrefix(item.Version, version) {
+		if strings.HasPrefix(item.Version, version) && isUnofficialRelease(item.Version) {
 			res = append(res, item)
 		}
 	}
 	return res
+}
+
+func isUnofficialRelease(version string) bool {
+	return strings.Contains(version, "ci-") || strings.Contains(version, "nightly-")
 }
