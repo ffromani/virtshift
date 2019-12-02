@@ -54,6 +54,11 @@ func main() {
 	pflag.BoolVarP(&bestScore, "best", "B", false, "show only data about the best scored build")
 	pflag.Parse()
 
+	if bestScore && skipBuildScore {
+		fmt.Fprintf(os.Stderr, "no scores available\n")
+		os.Exit(0)
+	}
+
 	var err error
 	bi, err := graphinfo.NewFromURL(graphURL, OCPVersion)
 	if err != nil {
@@ -70,22 +75,16 @@ func main() {
 		}
 	}
 
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 1, ' ', 0)
 	if bestScore {
-		if skipBuildScore {
-			fmt.Fprintf(os.Stderr, "no scores available\n")
-			os.Exit(0)
-		}
 		item := findHighestScoreBuildInfo(bi, scores)
-		w := tabwriter.NewWriter(os.Stdout, 0, 2, 1, ' ', 0)
 		fmt.Fprintf(w, "%s\t\t%s\t\t%v\n", item.Version, item.Payload, scores[item.Version])
-		w.Flush()
 	} else {
-		w := tabwriter.NewWriter(os.Stdout, 0, 2, 1, ' ', 0)
 		for _, item := range bi {
 			fmt.Fprintf(w, "%s\t\t%s\t\t%v\n", item.Version, item.Payload, scores[item.Version])
 		}
-		w.Flush()
 	}
+	w.Flush()
 }
 
 func findHighestScoreBuildInfo(bi []graphinfo.BuildInfo, scores buildscore.BuildScore) graphinfo.BuildInfo {
